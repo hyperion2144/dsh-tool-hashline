@@ -219,4 +219,28 @@ E2E acceptance (smoke, on a real dsh checkout @ 47f943): install plugin + `hashl
 - **Guidance shadowing by name** is inferred from "nearest shadowing farthest" for both registries — verified in milestone 1, fallback ready.
 - **Manual preset directory creation** relies on live root scanning (documented); official `copy()` flow is the primary path.
 - `str_replace`/`view`/`create`/`insert` (global `tool-str-replace-editor`) remain available alongside hashline in the standard family — intentional v1 coexistence; optionally deny-listable later.
-- Reference design features deferred: snapshot-merge recovery (ADR 0004/0005), hashline `grep`, `replace_text` (behind config).
+- Reference design features deferred: snapshot-merge recovery (ADR 0004/0005) only — hashline `grep` and the `replace_text` config now ship.
+
+## 9. Grep (added per user scope: full reference surface)
+
+Adopted from pi-hashline-edit's third tool: `grep` (opt-in, `grep: true`) runs the
+PACKAGED ripgrep (`@vscode/ripgrep`) through `ctx.subprocess.spawn` — no system
+rg required — with `--json` NDJSON match records. Args: `pattern` (regex unless
+`literal`), `path`, `glob`, `ignore_case`, `context` (0-5), `limit` (50/200).
+
+- Matched files are read through `ctx.fs` for context-correct hashes, then
+  `fs/observed` is emitted — the DSH-native equivalent of pi's read-snapshot,
+  so anchors from grep feed `edit` with NO prior read (integration-tested).
+- Merged context ranges render as `formatHashlineRegion` blocks (`LINE#HASH:text`,
+  gap ellipsis, per-file `---` separators, summary line).
+- Subprocess dependency is conditional (`ctx.inject(['subprocess'], ...)` inside
+  apply, mirroring tool-fs's read_image pattern) so the read/edit suite mounts
+  in deployments without a subprocess seam.
+- On the `hashline` preset the tool shadows the global tool-fs-search `grep` by
+  name; in a host-plane swap the `tool-fs-search` row must be disabled first
+  (same-layer duplicate names throw).
+
+Prompt injection = the three `ctx.systemPrompt.section` guidance sections
+(`tool:read` 100, `tool:edit` 102, `tool:grep` 104): read teaches anchor
+capture, edit teaches the op vocabulary and stale rejection, grep teaches the
+grep→edit loop and narrowing order.

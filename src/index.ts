@@ -1,8 +1,9 @@
 /**
- * Hash-anchored read/edit tool plugin for DeepSeek Harness. Registers the
- * hashline `read` and `edit` tools and their prompt guidance; composition is
- * a preset-plane swap (see PLAN.md) — the preset mounts this plugin in place
- * of `tool-fs`, and scope layering shadows the global read/edit.
+ * Hash-anchored read/edit/grep tool plugin for DeepSeek Harness. Registers
+ * the hashline `read`, `edit`, and (opt-in) `grep` tools and their prompt
+ * guidance; composition is a preset-plane swap (see PLAN.md) — the preset
+ * mounts this plugin in place of `tool-fs`, and scope layering shadows the
+ * global read/edit/grep by name.
  * @module dsh-tool-hashline
  */
 
@@ -11,11 +12,11 @@ import z from '@deepseek-ai/schemastery'
 import { assertHashLength, DEFAULT_HASH_LENGTH } from './hash.ts'
 import { applyEditTool } from './edit.ts'
 import { applyReadTool, type ReadToolCaps } from './read.ts'
+import { applyGrepTool } from './grep.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'tool-hashline'
 
-/** Services required by the hashline tool suite. */
 export const inject = ['tools', 'fs', 'systemPrompt']
 
 /** Plugin config (all optional — `Config` supplies the defaults). */
@@ -32,6 +33,8 @@ export interface Config {
   hashLength: number
   /** Allow the literal `replace_text` op in edit (off by default: anchor-only). */
   replaceText: boolean
+  /** Register the hash-anchored `grep` tool (off by default, like pi-hashline-edit). */
+  grep: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -41,6 +44,7 @@ export const Config: z<Config> = z.object({
   readStreamMinSize: z.number().default(10485760),
   hashLength: z.natural().min(2).max(4).default(DEFAULT_HASH_LENGTH),
   replaceText: z.boolean().default(false),
+  grep: z.boolean().default(false),
 })
 
 /** Every read cap counts lines/chars/bytes — a positive integer, or windowing arithmetic misbehaves silently. */
@@ -72,4 +76,11 @@ export function apply(ctx: Context, config: Config): void {
     hashLength: config.hashLength,
     replaceText: config.replaceText,
   })
+  if (config.grep) {
+    // Conditional like tool-fs's read_image: grep needs the subprocess seam,
+    // but the read/edit suite must not wait on it in deployments without one.
+    ctx.inject(['subprocess'], (grepCtx) => {
+      applyGrepTool(grepCtx, { hashLength: config.hashLength })
+    })
+  }
 }
