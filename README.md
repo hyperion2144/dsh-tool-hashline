@@ -122,30 +122,32 @@ Stable `{name, code}` metadata on failures:
 - **Strictness**: an anchor that doesn't match fails the whole call. No relocation to a "close enough" line, ever — the tool trades convenience for correctness.
 - **File-level safety net**: every mutation still goes through DSH's `fs/edit-intent` → version-CAS write, so concurrent modification between validation and write is caught as `FS_STALE_VERSION`.
 
-## Install
+## How to install
 
-### 1. Get the plugin into the profile
+### Prerequisites
 
-Development (absolute path, no publish):
+- **Node.js ≥ 20** (for running dsh and the plugin).
+- **dsh** — no global install needed, `npx @deepseek-ai/dsh` works: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
+- A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
 
-```sh
-# preset/agent.cordis.yml row:
-- id: tool-hashline
-  name: 'file:///C:/absolute/path/to/dsh-tool-hashline/src/index.ts'
-```
+### Step 1 — get the plugin
 
-Published (npm):
+**Option A: npm (once published).**
 
 ```sh
 dsh plugin --profile web add dsh-tool-hashline
-# preset/agent.cordis.yml row:
-- id: tool-hashline
-  name: '@deepseek-ai/dsh-tool-hashline'
 ```
 
-### 2. Author the `hashline` preset
+**Option B: from source** (development, no publish):
 
-Drop the shipped files into the user preset root (hand-created presets are discovered live — verified against the roster source):
+```sh
+git clone https://github.com/<you>/dsh-tool-hashline.git
+cd dsh-tool-hashline && npm install
+```
+
+### Step 2 — author the `hashline` preset
+
+The plugin replaces the stock tools by **preset-plane shadowing**: a preset that mounts this plugin instead of `tool-fs` gives its sessions the hashline `read`/`edit`/`grep` while everything else keeps working from the host composition. Create the preset by dropping the shipped files into the user preset root (hand-created presets are discovered live):
 
 ```sh
 mkdir -p "$DSH_HOME/.agent-presets/hashline"
@@ -155,7 +157,21 @@ cp preset/preset.yml "$DSH_HOME/.agent-presets/hashline/"
 
 …or use the Web UI (Settings → presets → copy `standard` as `hashline`) and replace the copied composition with the shipped template.
 
-### 3. Select the preset
+Then edit the plugin row in `$DSH_HOME/.agent-presets/hashline/agent.cordis.yml` to point at your install:
+
+```yaml
+# npm install:
+- id: tool-hashline
+  name: 'dsh-tool-hashline'
+
+# from source (Windows needs the file:/// URL form):
+- id: tool-hashline
+  name: 'file:///C:/path/to/dsh-tool-hashline/src/index.ts'
+```
+
+To also enable grep, add `config: { grep: true }` to that row.
+
+### Step 3 — select the preset
 
 Settings → presets → `hashline`, or set the default in `$DSH_HOME/settings.yaml`:
 
@@ -163,6 +179,14 @@ Settings → presets → `hashline`, or set the default in `$DSH_HOME/settings.y
 agent-presets:
   default: hashline
 ```
+
+New sessions now run on hashline. Sessions already running keep their composition — only new sessions pick up the preset.
+
+### Step 4 — verify it works
+
+1. In a session: **read any text file** — output lines are `LINE#HASH:` tagged (`   1#PK:alpha`).
+2. Ask the agent to **edit something** — the call carries `edits: [{op, pos: "N#HASH", …}]` and the result returns an `--- Anchors ---` block.
+3. Settings → Agent presets should show **"In use: Hashline"**.
 
 ### What the swap changes
 
@@ -173,6 +197,7 @@ On the `hashline` preset, `read`/`edit` (and `grep` when enabled) are the hashli
 The `headless` profile composes no preset roster. Use a `--patch` overlay with a host-plane swap instead:
 
 ```yaml
+# hashline.patch.yml
 - id: tool-fs
   disabled: true
 - id: tool-fs-search
