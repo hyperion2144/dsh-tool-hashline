@@ -127,22 +127,26 @@ Stable `{name, code}` metadata on failures:
 ### Prerequisites
 
 - **Node.js ≥ 20** (for running dsh and the plugin).
-- **dsh** — no global install needed, `npx @deepseek-ai/dsh` works: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
+- **dsh**. Two ways to have it:
+  - No install: `npx @deepseek-ai/dsh <command>` — note the bare command always needs a profile: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
+  - Global install (gives you the bare `dsh` command on PATH): `npm i -g @deepseek-ai/dsh`.
 - A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
 
 ### Step 1 — get the plugin
 
-**Option A: npm (once published).**
+**Option A: from source** (works today, no publish needed):
+
+```sh
+git clone https://github.com/InklingYoshi584/dsh-tool-hashline.git
+cd dsh-tool-hashline && npm install
+```
+
+**Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`):
 
 ```sh
 dsh plugin --profile web add dsh-tool-hashline
-```
-
-**Option B: from source** (development, no publish):
-
-```sh
-git clone https://github.com/<you>/dsh-tool-hashline.git
-cd dsh-tool-hashline && npm install
+# …or without a global dsh:
+npx @deepseek-ai/dsh plugin --profile web add dsh-tool-hashline
 ```
 
 ### Step 2 — author the `hashline` preset
