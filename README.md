@@ -6,6 +6,103 @@ Protocol adopted from [pi-hashline-edit](https://github.com/RimuruW/pi-hashline-
 
 ---
 
+## How to install
+
+### Prerequisites
+
+- **Node.js ≥ 20** (for running dsh and the plugin).
+- **dsh**. Two ways to have it:
+  - No install: `npx @deepseek-ai/dsh <command>` — note the bare command always needs a profile: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
+  - Global install (gives you the bare `dsh` command on PATH): `npm i -g @deepseek-ai/dsh`.
+- A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
+
+### Step 1 — get the plugin
+
+**Option A: from source** (works today, no publish needed):
+
+```sh
+git clone https://github.com/InklingYoshi584/dsh-tool-hashline.git
+cd dsh-tool-hashline && npm install
+```
+
+The `@deepseek-ai/*` harness packages are dev dependencies here on purpose: at runtime the plugin resolves them from the dsh installation through the profile's maintained flat fallback (`$DSH_HOME/profiles/node_modules` symlinks), so no duplicate harness core ever ships with the plugin. `npm install` only needs to succeed for the tests; running the plugin needs nothing but the preset row.
+
+**Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`):
+
+```sh
+dsh plugin --profile web add dsh-tool-hashline
+# …or without a global dsh:
+npx @deepseek-ai/dsh plugin --profile web add dsh-tool-hashline
+```
+
+### Step 2 — author the `hashline` preset
+
+The plugin replaces the stock tools by **preset-plane shadowing**: a preset that mounts this plugin instead of `tool-fs` gives its sessions the hashline `read`/`edit`/`grep` while everything else keeps working from the host composition. Create the preset by dropping the shipped files into the user preset root (hand-created presets are discovered live):
+
+```sh
+mkdir -p "$DSH_HOME/.agent-presets/hashline"
+cp preset/agent.cordis.yml "$DSH_HOME/.agent-presets/hashline/"
+cp preset/preset.yml "$DSH_HOME/.agent-presets/hashline/"
+```
+
+…or use the Web UI (Settings → presets → copy `standard` as `hashline`) and replace the copied composition with the shipped template.
+
+Then edit the plugin row in `$DSH_HOME/.agent-presets/hashline/agent.cordis.yml` to point at your install:
+
+```yaml
+# npm install:
+- id: tool-hashline
+  name: 'dsh-tool-hashline'
+
+# from source (Windows needs the file:/// URL form):
+- id: tool-hashline
+  name: 'file:///C:/path/to/dsh-tool-hashline/src/index.ts'
+```
+
+To also enable grep, add `config: { grep: true }` to that row.
+
+### Step 3 — select the preset
+
+Settings → presets → `hashline`, or set the default in `$DSH_HOME/settings.yaml`:
+
+```yaml
+agent-presets:
+  default: hashline
+```
+
+New sessions now run on hashline. Sessions already running keep their composition — only new sessions pick up the preset.
+
+### Step 4 — verify it works
+
+1. In a session: **read any text file** — output lines are `LINE#HASH:` tagged (`   1#PK:alpha`).
+2. Ask the agent to **edit something** — the call carries `edits: [{op, pos: "N#HASH", …}]` and the result returns an `--- Anchors ---` block.
+3. Settings → Agent presets should show **"In use: Hashline"**.
+
+### What the swap changes
+
+On the `hashline` preset, `read`/`edit` (and `grep` when enabled) are the hashline versions — the preset's scope layer shadows the global `tool-fs`/`tool-fs-search` tools **by name**. `write`, `read_image`, `glob`, `bash`, and everything else keep working from the host composition, and subagents inherit the preset.
+
+### Headless / no-roster deployments
+
+The `headless` profile composes no preset roster. Use a `--patch` overlay with a host-plane swap instead:
+
+```yaml
+# hashline.patch.yml
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- insert:
+    - id: tool-hashline
+      name: 'file:///C:/…/src/index.ts'
+      config:
+        grep: true
+```
+
+```sh
+npx @deepseek-ai/dsh --profile headless --patch ./hashline.patch.yml "your task"
+```
+
 ## Why use it
 
 AI coding agents edit files by quoting what they saw on screen. Two things can be true at edit time: the file changed since the read (a concurrent write, a drift, an earlier edit in the same turn), and the quoted text appears in more than one place. Stock edit tools handle this badly:
@@ -122,102 +219,6 @@ Stable `{name, code}` metadata on failures:
 - **Strictness**: an anchor that doesn't match fails the whole call. No relocation to a "close enough" line, ever — the tool trades convenience for correctness.
 - **File-level safety net**: every mutation still goes through DSH's `fs/edit-intent` → version-CAS write, so concurrent modification between validation and write is caught as `FS_STALE_VERSION`.
 
-## How to install
-
-### Prerequisites
-
-- **Node.js ≥ 20** (for running dsh and the plugin).
-- **dsh**. Two ways to have it:
-  - No install: `npx @deepseek-ai/dsh <command>` — note the bare command always needs a profile: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
-  - Global install (gives you the bare `dsh` command on PATH): `npm i -g @deepseek-ai/dsh`.
-- A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
-
-### Step 1 — get the plugin
-
-**Option A: from source** (works today, no publish needed):
-
-```sh
-git clone https://github.com/InklingYoshi584/dsh-tool-hashline.git
-cd dsh-tool-hashline && npm install
-```
-
-The `@deepseek-ai/*` harness packages are dev dependencies here on purpose: at runtime the plugin resolves them from the dsh installation through the profile's maintained flat fallback (`$DSH_HOME/profiles/node_modules` symlinks), so no duplicate harness core ever ships with the plugin. `npm install` only needs to succeed for the tests; running the plugin needs nothing but the preset row.
-
-**Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`):
-
-```sh
-dsh plugin --profile web add dsh-tool-hashline
-# …or without a global dsh:
-npx @deepseek-ai/dsh plugin --profile web add dsh-tool-hashline
-```
-
-### Step 2 — author the `hashline` preset
-
-The plugin replaces the stock tools by **preset-plane shadowing**: a preset that mounts this plugin instead of `tool-fs` gives its sessions the hashline `read`/`edit`/`grep` while everything else keeps working from the host composition. Create the preset by dropping the shipped files into the user preset root (hand-created presets are discovered live):
-
-```sh
-mkdir -p "$DSH_HOME/.agent-presets/hashline"
-cp preset/agent.cordis.yml "$DSH_HOME/.agent-presets/hashline/"
-cp preset/preset.yml "$DSH_HOME/.agent-presets/hashline/"
-```
-
-…or use the Web UI (Settings → presets → copy `standard` as `hashline`) and replace the copied composition with the shipped template.
-
-Then edit the plugin row in `$DSH_HOME/.agent-presets/hashline/agent.cordis.yml` to point at your install:
-
-```yaml
-# npm install:
-- id: tool-hashline
-  name: 'dsh-tool-hashline'
-
-# from source (Windows needs the file:/// URL form):
-- id: tool-hashline
-  name: 'file:///C:/path/to/dsh-tool-hashline/src/index.ts'
-```
-
-To also enable grep, add `config: { grep: true }` to that row.
-
-### Step 3 — select the preset
-
-Settings → presets → `hashline`, or set the default in `$DSH_HOME/settings.yaml`:
-
-```yaml
-agent-presets:
-  default: hashline
-```
-
-New sessions now run on hashline. Sessions already running keep their composition — only new sessions pick up the preset.
-
-### Step 4 — verify it works
-
-1. In a session: **read any text file** — output lines are `LINE#HASH:` tagged (`   1#PK:alpha`).
-2. Ask the agent to **edit something** — the call carries `edits: [{op, pos: "N#HASH", …}]` and the result returns an `--- Anchors ---` block.
-3. Settings → Agent presets should show **"In use: Hashline"**.
-
-### What the swap changes
-
-On the `hashline` preset, `read`/`edit` (and `grep` when enabled) are the hashline versions — the preset's scope layer shadows the global `tool-fs`/`tool-fs-search` tools **by name**. `write`, `read_image`, `glob`, `bash`, and everything else keep working from the host composition, and subagents inherit the preset.
-
-### Headless / no-roster deployments
-
-The `headless` profile composes no preset roster. Use a `--patch` overlay with a host-plane swap instead:
-
-```yaml
-# hashline.patch.yml
-- id: tool-fs
-  disabled: true
-- id: tool-fs-search
-  disabled: true
-- insert:
-    - id: tool-hashline
-      name: 'file:///C:/…/src/index.ts'
-      config:
-        grep: true
-```
-
-```sh
-npx @deepseek-ai/dsh --profile headless --patch ./hashline.patch.yml "your task"
-```
 
 ## Configuration
 
