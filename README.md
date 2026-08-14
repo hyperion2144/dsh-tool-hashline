@@ -13,13 +13,21 @@ Protocol adopted from [pi-hashline-edit](https://github.com/RimuruW/pi-hashline-
 - **Node.js ≥ 20** (for running dsh and the plugin).
 - **dsh**. Two ways to have it:
   - No install: `npx @deepseek-ai/dsh <command>` — note the bare command always needs a profile: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
-  - Global install (gives you the bare `dsh` command on PATH): `npm i -g @deepseek-ai/dsh`.
-- **pnpm** — the `dsh plugin` command forwards to it: `npm i -g pnpm` (only needed for the npm install path).
+  - Global install (gives you the bare `dsh` command on PATH, plus pnpm in one go): `npm i -g pnpm @deepseek-ai/dsh`.
+- **pnpm** — the `dsh plugin` command forwards to it (installed by the global command above).
 - A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
 
 ### Step 1 — get the plugin
 
-**Option A: from source** (works today):
+**Option A: npm (recommended)** — published on the registry, installs the prebuilt `lib/` bundle:
+
+```sh
+dsh plugin --profile web add dsh-tool-hashline
+# …or without a global dsh:
+npx @deepseek-ai/dsh plugin --profile web add dsh-tool-hashline
+```
+
+**Option B: from source** (development):
 
 ```sh
 git clone https://github.com/InklingYoshi584/dsh-tool-hashline.git
@@ -27,14 +35,6 @@ cd dsh-tool-hashline && npm install
 ```
 
 The `@deepseek-ai/*` harness packages are dev dependencies here on purpose: at runtime the plugin resolves them from the dsh installation through the profile's maintained flat fallback (`$DSH_HOME/profiles/node_modules` symlinks), so no duplicate harness core ever ships with the plugin. `npm install` only needs to succeed for the tests; running the plugin needs nothing but the preset row.
-
-**Option B: npm** (installs the prebuilt `lib/` bundle; verified against the latest published dsh generation):
-
-```sh
-dsh plugin --profile web add dsh-tool-hashline
-# …or without a global dsh:
-npx @deepseek-ai/dsh plugin --profile web add dsh-tool-hashline
-```
 
 ### Step 2 — author the `hashline` preset
 
