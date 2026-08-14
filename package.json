@@ -16,7 +16,7 @@
     "node": ">=20"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./lib/index.js"
   },
   "repository": {
     "type": "git",
@@ -27,15 +27,16 @@
     "url": "https://github.com/InklingYoshi584/dsh-tool-hashline/issues"
   },
   "files": [
-    "src",
-    "prompts",
+    "lib",
     "preset",
     "README.md"
   ],
   "scripts": {
+    "build": "tsup src/index.ts --format esm --out-dir lib --clean",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check && npm run build"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -50,6 +51,7 @@
     "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^24.0.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },

@@ -14,6 +14,7 @@ Protocol adopted from [pi-hashline-edit](https://github.com/RimuruW/pi-hashline-
 - **dsh**. Two ways to have it:
   - No install: `npx @deepseek-ai/dsh <command>` — note the bare command always needs a profile: `npx @deepseek-ai/dsh web` or `npx @deepseek-ai/dsh --profile headless "task"`.
   - Global install (gives you the bare `dsh` command on PATH): `npm i -g @deepseek-ai/dsh`.
+- **pnpm** — the `dsh plugin` command forwards to it: `npm i -g pnpm` (only needed for the npm install path).
 - A **DeepSeek API key** for live sessions (configure it in the Web UI at Settings → Models, or export `DEEPSEEK_API_KEY`).
 
 ### Step 1 — get the plugin
@@ -27,7 +28,7 @@ cd dsh-tool-hashline && npm install
 
 The `@deepseek-ai/*` harness packages are dev dependencies here on purpose: at runtime the plugin resolves them from the dsh installation through the profile's maintained flat fallback (`$DSH_HOME/profiles/node_modules` symlinks), so no duplicate harness core ever ships with the plugin. `npm install` only needs to succeed for the tests; running the plugin needs nothing but the preset row.
 
-**Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`):
+**Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`). Installs the prebuilt `lib/` bundle; verified against the latest published dsh generation:
 
 ```sh
 dsh plugin --profile web add dsh-tool-hashline
@@ -266,7 +267,8 @@ tests/              105 tests: unit + integration over real fs-local, policy, an
 
 ```sh
 npm install
-npm run check   # typecheck + 105 tests
+npm run check    # typecheck + 105 tests
+npm run build    # lib/index.js — what the npm package ships
 ```
 
 ## Credits
