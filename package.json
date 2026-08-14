@@ -1,0 +1,50 @@
+{
+  "name": "dsh-tool-hashline",
+  "version": "0.1.0",
+  "description": "Hash-anchored read/edit tool plugin for DeepSeek Harness (DSH): every line carries a content hash, and stale anchors are rejected before they touch the file.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "hashline",
+    "coding-agent",
+    "edit-tool"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "prompts",
+    "preset",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-fs": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-fs-local": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-fs-observation-policy": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-subprocess-local": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "^1.18.0"
+  }
+}
