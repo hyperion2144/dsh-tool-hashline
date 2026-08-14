@@ -18,6 +18,14 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InklingYoshi584/dsh-tool-hashline.git"
+  },
+  "homepage": "https://github.com/InklingYoshi584/dsh-tool-hashline#readme",
+  "bugs": {
+    "url": "https://github.com/InklingYoshi584/dsh-tool-hashline/issues"
+  },
   "files": [
     "src",
     "prompts",
