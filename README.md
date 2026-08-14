@@ -141,6 +141,8 @@ git clone https://github.com/InklingYoshi584/dsh-tool-hashline.git
 cd dsh-tool-hashline && npm install
 ```
 
+The `@deepseek-ai/*` harness packages are dev dependencies here on purpose: at runtime the plugin resolves them from the dsh installation through the profile's maintained flat fallback (`$DSH_HOME/profiles/node_modules` symlinks), so no duplicate harness core ever ships with the plugin. `npm install` only needs to succeed for the tests; running the plugin needs nothing but the preset row.
+
 **Option B: npm** (requires the package on the registry first — `npm login`, then `npm publish`):
 
 ```sh
