@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildGrepArgv,
+  cardMatchesFor,
   displayPath,
   formatGrepFileSection,
   formatGrepSummary,
@@ -11,7 +12,7 @@ import {
   parseGrepArgs,
   parseRgMatchRecord,
 } from '../src/grep-engine.ts'
-import { computeHashes } from '../src/hash.ts'
+import { computeHashes, formatHashLabel } from '../src/hash.ts'
 
 describe('parseGrepArgs', () => {
   it('defaults context to 0, limit to 50, flags to false', () => {
@@ -112,6 +113,23 @@ describe('formatGrepFileSection', () => {
     const section = formatGrepFileSection('f.txt', lines, [4], 1, 2)
     const hashes = computeHashes(lines, 2)
     expect(section).toContain(`4#${hashes[3]}:four`)
+  })
+})
+
+describe('cardMatchesFor', () => {
+  const lines = linesOf('one\ntwo\nthree\n')
+
+  it('emits {lineNumber, line} with the #HASH: label over the file context', () => {
+    const hashes = computeHashes(lines, 2)
+    expect(cardMatchesFor(lines, [1, 3], 2)).toEqual([
+      { lineNumber: 1, line: formatHashLabel({ line: 1, hash: hashes[0]! }, 'one') },
+      { lineNumber: 3, line: formatHashLabel({ line: 3, hash: hashes[2]! }, 'three') },
+    ])
+  })
+
+  it('filters out-of-range match lines', () => {
+    expect(cardMatchesFor(lines, [99], 2)).toEqual([])
+    expect(cardMatchesFor(lines, [99, 2], 2)).toEqual([{ lineNumber: 2, line: expect.stringMatching(/^#[ZPMQVRWSNKTXJBYH]{2}: two$/u) }])
   })
 })
 

@@ -45,7 +45,7 @@ export interface ApplyResult {
   content: string
   /** Whether the content actually changed. */
   changed: boolean
-  /** Fresh-anchor window on FINAL line coordinates (context ±1), merged. */
+  /** Fresh-anchor window on FINAL line coordinates: the changed lines only, merged. */
   anchorsRange: LineRange
 }
 
@@ -77,9 +77,12 @@ export function assertLiteralLines(lines: readonly string[]): void {
 }
 
 /**
- * Verify a parsed anchor against the file's CURRENT hashes. No relocation,
- * no fuzzy matching: a mismatched anchor fails the whole call, and a hash
- * that matches elsewhere is reported as ambiguous with candidates.
+ * Verify a parsed anchor against the file's CURRENT content-stable hashes.
+ * Positioning is by LINE NUMBER: the anchor names one exact line, and the hash
+ * is a content check that the line still holds what the caller read (or that
+ * the same content simply landed at this number). A mismatched anchor fails
+ * the whole call — no relocation, no fuzzy matching. Identical lines sharing a
+ * hash elsewhere do not matter: validation never compares across lines.
  */
 export function validateAnchor(anchor: Anchor, hashes: readonly string[], totalLines: number, label: string): void {
   if (anchor.line < 1 || anchor.line > totalLines) {
@@ -89,19 +92,12 @@ export function validateAnchor(anchor: Anchor, hashes: readonly string[], totalL
     )
   }
   const actual = hashes[anchor.line - 1]
-  if (actual === anchor.hash) return
-  const candidates = hashes
-    .flatMap((hash, i) => hash === anchor.hash ? [i + 1] : [])
-  if (candidates.length > 0) {
+  if (actual !== anchor.hash) {
     throw new HashlineError(
-      `${label} anchor ${formatAnchor(anchor)} does not match line ${anchor.line}; the hash matches line(s) ${candidates.join(', ')} instead — re-read the file, then retry`,
-      'HASHLINE_AMBIGUOUS',
+      `${label} anchor ${formatAnchor(anchor)} no longer matches line ${anchor.line} — the line's content changed; re-read the file, then retry`,
+      'HASHLINE_STALE_ANCHOR',
     )
   }
-  throw new HashlineError(
-    `${label} anchor ${formatAnchor(anchor)} no longer matches line ${anchor.line} — re-read the file, then retry`,
-    'HASHLINE_STALE_ANCHOR',
-  )
 }
 
 function parseRequiredAnchor(value: string | undefined, field: string): Anchor {
@@ -256,8 +252,10 @@ export function applyResolved(originalLines: readonly string[], ops: readonly Re
 }
 
 /**
- * The fresh-anchor window on FINAL coordinates: first/last changed line,
- * expanded by one for context hashing, clamped to the final file.
+ * The fresh-anchor window on FINAL coordinates: the changed lines only (no
+ * context expansion — content-stable hashing means untouched lines keep their
+ * hashes and the caller reuses them with shifted line numbers). `first`/`last`
+ * are 0-indexed diff boundaries; converted to 1-based inclusive and clamped.
  */
 function anchorsRange(originalLines: readonly string[], finalLines: readonly string[], finalTotal: number): LineRange {
   const min = Math.min(originalLines.length, finalLines.length)
@@ -265,13 +263,18 @@ function anchorsRange(originalLines: readonly string[], finalLines: readonly str
   while (first < min && originalLines[first] === finalLines[first]) first++
   let lastOrig = originalLines.length - 1
   let lastFinal = finalLines.length - 1
-  while (lastOrig > first && lastFinal > first && originalLines[lastOrig] === finalLines[lastFinal]) {
+  // Pair equal interior tail lines too (down to — and including — `first`):
+  // when an insert shifts the tail, unchanged content pairs at shifted
+  // indices and must stay OUT of the changed range.
+  while (lastOrig >= first && lastFinal >= first && originalLines[lastOrig] === finalLines[lastFinal]) {
     lastOrig--
     lastFinal--
   }
-  const from = Math.max(1, first + 1 - 1)
-  const to = Math.min(finalTotal, lastFinal + 1 + 1)
-  return { from, to: Math.max(to, from) }
+  // No lines changed (already caught by `changed`, but be safe): an empty-ish
+  // window at the first line rather than an inverted range.
+  const from = Math.min(first + 1, finalTotal)
+  const to = Math.max(from, Math.min(finalTotal, lastFinal + 1))
+  return { from, to }
 }
 
 /**

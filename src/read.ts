@@ -13,6 +13,7 @@ import { FsError } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { buildTaggedWindow, formatReadOutput } from './render.ts'
+import { formatHashLabel } from './hash.ts'
 import { READ_GUIDANCE } from './prompts/read.ts'
 
 /** Resolved read-tool caps — plugin config after defaulting. */
@@ -35,6 +36,24 @@ export interface ReadInput {
   offset: number
   limit: number
   raw: boolean
+}
+
+/** One persisted read-meta line: the hash kept beside the clean text. */
+export interface ReadMetaLine {
+  number: number
+  hash: string
+  text: string
+}
+
+/**
+ * The web read card's line projection from persisted meta: the file line
+ * number stays in the gutter while `#HASH: text` fills the line column, so a
+ * harness `ReadBlock` (whose line type is `{number, text}` with no hash slot)
+ * displays every line as `LINE#HASH`. Cordis-free and pure — unit-tested, and
+ * the same output on live and replay paths.
+ */
+export function readViewLines(metaLines: readonly ReadMetaLine[]): { number: number; text: string }[] {
+  return metaLines.map(({ number, hash, text }) => ({ number, text: formatHashLabel({ line: number, hash }, text) }))
 }
 
 function parsePositiveInteger(value: number, name: string): number {
@@ -79,7 +98,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
 
   ctx.tools.register(defineTool({
     name: 'read',
-    description: 'Read a UTF-8 text file and return line-numbered content with per-line content hashes (LINE#HASH).',
+    description: 'Read a UTF-8 text file and return each line as `LINE#HASH: content`. The line NUMBER is the line\'s position in the WHOLE file (a read past offset keeps the file\'s own numbering); the hash is a content-stable check of that line\'s text. Use offset and limit to window; raw: true for plain content without tags.',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to read, resolved by the filesystem backend.' },
       offset: { type: 'number', description: '1-based first line to return. Defaults to 1.' },
@@ -125,12 +144,14 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
           }),
         }]
       },
-      // Persist a hash-free projection so the UI read card and replay keep
-      // the tool-fs shape; tags exist only in the model-facing text.
+      // Persist the faithful line projection (number, hash, text) so the read
+      // card and replay can re-render `LINE#HASH` (and a future Client card
+      // can style the digest separately). The model-facing envelope already
+      // carries the tags; this projection only feeds the web read card.
       presentationMeta: (_args, value) => ({
         path: value.path,
         offset: value.offset,
-        lines: value.lines.map(({ number, text }: { number: number; text: string }) => ({ number, text })),
+        lines: value.lines.map(({ number, hash, text }) => ({ number, hash, text })),
         ...(value.totalLines === undefined ? {} : { totalLines: value.totalLines }),
       }),
     },
@@ -197,7 +218,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
       // The persisted meta mirrors tool-fs's shape; totalLines is omitted for
       // byte-capped reads, which the read card cannot express — fall back to
       // the generic result rendering in that rare case.
-      const meta = result.meta as { path: string; offset: number; lines: { number: number; text: string }[]; totalLines?: number }
+      const meta = result.meta as { path: string; offset: number; lines: { number: number; hash: string; text: string }[]; totalLines?: number }
       if (meta.totalLines === undefined) return undefined
       const only = result.content.length === 1 ? result.content[0] : undefined
       const text = only?.type === 'text' ? only.text : undefined
@@ -208,7 +229,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
         card: 'read',
         path: meta.path,
         offset: meta.offset,
-        lines: meta.lines,
+        lines: readViewLines(meta.lines),
         totalLines: meta.totalLines,
         content: [{ type: 'text', text: body }],
       }

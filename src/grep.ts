@@ -3,7 +3,7 @@
  * as `LINE#HASH:content` anchors usable directly in edit. Execution spawns the
  * PACKAGED ripgrep binary through the subprocess seam (no system rg install
  * required), then reads each matched file through `ctx.fs` to compute
- * context-correct hashes and records it as observed — so edits anchored on
+ * content-stable hashes and records it as observed — so edits anchored on
  * grep output need no prior read. Adopted from pi-hashline-edit (MIT);
  * subprocess plumbing mirrors `@deepseek-ai/dsh-tool-fs-search`.
  * @module dsh-tool-hashline/grep
@@ -11,6 +11,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import { FsError } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -18,6 +19,7 @@ import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-sub
 import type {} from '@deepseek-ai/dsh-subprocess'
 import {
   buildGrepArgv,
+  cardMatchesFor,
   displayPath,
   formatGrepFileSection,
   formatGrepSummary,
@@ -64,7 +66,7 @@ export function applyGrepTool(ctx: Context, opts: GrepToolOptions): void {
 
   ctx.tools.register(defineTool({
     name: 'grep',
-    description: 'Search file contents with ripgrep. Matched lines return as LINE#HASH:content anchors usable directly in edit without a prior read.',
+    description: 'Search file contents with ripgrep. Each matched line returns as `LINE#HASH: content` — the line NUMBER is the line\'s position in the whole file, the hash its content-stable check — usable directly in edit without a prior read.',
     timeoutMs: 30_000,
     parameters: {
       pattern: { type: 'string', required: true, description: 'Search pattern (regex unless literal: true).' },
@@ -92,11 +94,43 @@ export function applyGrepTool(ctx: Context, opts: GrepToolOptions): void {
               },
             },
           },
+          // Additive projection for the web search card: per-file matched
+          // lines with `#HASH:` labels. Not model-facing; the `render` text is
+          // the anchor contract the model consumes.
+          files: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                matches: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      lineNumber: { type: 'integer', required: true },
+                      line: { type: 'string', required: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
           truncated: { type: 'boolean', required: true },
           output: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{ type: 'text', text: value.output as string }],
+      // Persist the card projection so the search card renders identically on
+      // live and replay paths (the presentation contract: presentResult only
+      // sees result.meta + content, so the data must ride the canonical value).
+      presentationMeta: (_args, value) => ({
+        files: value.files ?? [],
+        truncated: value.truncated,
+        total: value.matches.length,
+      }),
     },
     async execute(args, exec) {
       const input = parseGrepArgs(args)
@@ -156,6 +190,7 @@ export function applyGrepTool(ctx: Context, opts: GrepToolOptions): void {
       const sections: string[] = []
       let fileCount = 0
       const canonicalMatches: { path: string; lineNumber: number }[] = []
+      const files: { path: string; matches: { lineNumber: number; line: string }[] }[] = []
       for (const [filePath, matchLines] of byFile) {
         try {
           const target = await ctx.fs.resolve(filePath, {
@@ -168,11 +203,13 @@ export function applyGrepTool(ctx: Context, opts: GrepToolOptions): void {
           // Record the observation so edits anchored on these matches pass the
           // read-before-edit gate (pi's read-snapshot behavior, DSH-native).
           ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
-          const section = formatGrepFileSection(displayPath(filePath), linesOf(content), matchLines, input.context, opts.hashLength)
+          const fileLines = linesOf(content)
+          const section = formatGrepFileSection(displayPath(filePath), fileLines, matchLines, input.context, opts.hashLength)
           if (section !== undefined) {
             sections.push(section)
             fileCount++
             for (const lineNumber of matchLines) canonicalMatches.push({ path: displayPath(filePath), lineNumber })
+            files.push({ path: displayPath(filePath), matches: cardMatchesFor(fileLines, matchLines, opts.hashLength) })
           }
         } catch (error: unknown) {
           // Binary/non-text files and files that vanished between rg and us
@@ -183,7 +220,22 @@ export function applyGrepTool(ctx: Context, opts: GrepToolOptions): void {
       }
 
       const output = `${sections.join('\n---\n')}\n\n${formatGrepSummary(canonicalMatches.length, fileCount, truncated, input.limit)}`
-      return { matches: canonicalMatches, truncated, output }
+      return { matches: canonicalMatches, truncated, output, files }
+    },
+    // Result-time display: a grouped search card whose matched lines carry the
+    // `#HASH:` label (the meta projection buildGrepCardView narrows). Absent —
+    // generic raw-text row — for a failed search and for zero matches.
+    presentResult(_args, result: ToolResult): ToolResultView | undefined {
+      if (result.isError) return undefined
+      const meta = result.meta as { files: { path: string; matches: { lineNumber: number; line: string }[] }[]; truncated?: boolean; total?: number } | undefined
+      if (meta === undefined || meta.files.length === 0) return undefined
+      return {
+        card: 'search',
+        shape: 'matches',
+        files: meta.files,
+        truncated: meta.truncated ?? false,
+        total: meta.total ?? 0,
+      }
     },
   }))
 }

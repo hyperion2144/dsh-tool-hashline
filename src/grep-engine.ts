@@ -6,7 +6,7 @@
  * @module dsh-tool-hashline/grep-engine
  */
 
-import { computeHashes, splitLines, type LineRange } from './hash.ts'
+import { computeHashes, formatHashLabel, splitLines, type LineRange } from './hash.ts'
 
 export const GREP_DEFAULT_LIMIT = 50
 export const GREP_MAX_LIMIT = 200
@@ -121,8 +121,8 @@ export function mergeRange(ranges: LineRange[], range: LineRange): void {
 }
 
 /**
- * Render one inclusive region as `LINE#HASH:content` lines, hashes computed
- * over the file's current content (context triples), line numbers padded to
+ * Render one inclusive region as `LINE#HASH:content` lines, content-stable
+ * hashes computed over the file's current content, line numbers padded to
  * the region's width. Mirrors pi-hashline-edit's `formatHashlineRegion`.
  */
 export function formatHashlineRegion(
@@ -180,6 +180,30 @@ export function formatGrepSummary(matches: number, files: number, truncated: boo
   const noun = matches === 1 ? 'match' : 'matches'
   const fileNoun = files === 1 ? 'file' : 'files'
   return `${matches} ${noun} in ${files} ${fileNoun}.${truncated ? ` (truncated at ${limit})` : ''}`
+}
+
+/**
+ * The web search card's per-match projection from matched file content: each
+ * match is `{lineNumber, line}` where `line` carries the hash label
+ * (`#HASH: content`), mirroring {@link formatGrepFileSection}'s out-of-range
+ * filter. A harness `SearchBlock` line has no hash slot, so the digest rides
+ * the text — every matched line displays as `LINE#HASH`.
+ */
+export function cardMatchesFor(
+  fileLines: readonly string[],
+  matchLines: readonly number[],
+  hashLength: number,
+): { lineNumber: number; line: string }[] {
+  const hashes = computeHashes(fileLines, hashLength)
+  const out: { lineNumber: number; line: string }[] = []
+  for (const lineNum of matchLines) {
+    if (lineNum < 1 || lineNum > fileLines.length) continue
+    const text = fileLines[lineNum - 1]
+    const hash = hashes[lineNum - 1]
+    if (text === undefined || hash === undefined) continue
+    out.push({ lineNumber: lineNum, line: formatHashLabel({ line: lineNum, hash }, text) })
+  }
+  return out
 }
 
 /** Split rg's match list into first-seen file order with their line numbers. */

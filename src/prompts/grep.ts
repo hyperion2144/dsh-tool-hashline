@@ -4,7 +4,7 @@
  * @module dsh-tool-hashline/prompts/grep
  */
 
-export const GREP_GUIDANCE = `Use the grep tool — not shell grep or rg — to search file contents. Every matched line returns as \`LINE#HASH:content\`; copy those anchors verbatim into edit calls without a prior read — matched files are recorded as read for the edit gate.
+export const GREP_GUIDANCE = `Use the grep tool — not shell grep or rg — to search file contents. Every matched line returns as \`LINE#HASH:content\`: the line NUMBER is the line's position in the whole file (the locator) and the HASH a content-stable check; copy both verbatim into edit calls without a prior read — matched files are recorded as read for the edit gate.
 
 The pattern is a regular expression unless literal: true. Results respect .gitignore. Use path to scope to a file or directory; use glob to filter by filename pattern (e.g. "**/*.ts"). Set ignore_case for case-insensitive matching.
 

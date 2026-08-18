@@ -88,6 +88,27 @@ describe('hashline grep (packaged ripgrep + policy)', () => {
     expect(out).toContain('2 matches in 1 file.')
   })
 
+  it('persists card data in presentationMeta: per-file matches labeled #HASH:', async () => {
+    await writeFile(join(dir, 'notes.txt'), 'apple pie\nbanana bread\ncherry apple\n')
+    const result = await call('grep', { pattern: 'apple' })
+    expect(result.isError).toBe(false)
+    const meta = (result as { meta?: unknown }).meta as
+      | { files: { path: string; matches: { lineNumber: number; line: string }[] }[]; truncated: boolean; total: number }
+      | undefined
+    expect(meta).toBeDefined()
+    expect(meta!.total).toBe(2)
+    expect(meta!.truncated).toBe(false)
+    expect(meta!.files).toHaveLength(1)
+    expect(meta!.files[0]!.path).toBe('notes.txt')
+    expect(meta!.files[0]!.matches.map((m) => m.lineNumber)).toEqual([1, 3])
+    // Each match line is `#HASH: content`, and the hash matches the anchor the
+    // model-facing text reports for the same line.
+    const anchor1 = anchorAt(text(result), 1)
+    const hash1 = anchor1.split('#')[1]
+    expect(meta!.files[0]!.matches[0]!.line).toBe(`#${hash1}: apple pie`)
+    expect(meta!.files[0]!.matches[1]!.line).toMatch(/^#[ZPMQVRWSNKTXJBYH]{2}: cherry apple$/u)
+  })
+
   it('anchors from grep drive edit WITHOUT a prior read', async () => {
     await writeFile(join(dir, 'code.ts'), 'const a = 1\nconst b = 2\nconst c = 3\n')
     const grepResult = await call('grep', { pattern: 'const b' })

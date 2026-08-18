@@ -118,12 +118,13 @@ What hashline changes:
 
 | Property | Stock `edit` | hashline |
 |---|---|---|
-| Anchor | literal `old_string` text | `LINE#HASH` content hash |
-| File drifted since read | error, retry with new text | error **naming the stale anchor**, re-read, retry |
-| Same line text appears twice | ambiguity, "be more specific" | context hashing makes collisions rare; ambiguity lists candidates |
+| Anchor | literal `old_string` text | `LINE#HASH`: **the line number locates, the hash verifies** |
+| Same text appears twice | ambiguity, "be more specific" | line number is the locator — identical lines never conflict |
+| File drifted since read | error, retry with new text | error **naming the stale line**, re-read, retry |
 | Multiple hunks | one call per hunk | **N ops in one call**, one snapshot, one atomic write |
-| After an edit | re-read the file | fresh `--- Anchors ---` block → chained edits with no re-read |
+| After an edit | re-read the file | fresh `--- Anchors ---` block for the changed lines → chained edits with no re-read |
 | Search-to-edit | grep, then open, then quote | `grep` returns the same anchors → edit with no read at all |
+| Line shifted by your own edit | re-read to re-number | reuse `newLine#unchangedHash` — content keeps its hash |
 
 On top of that, DSH's own observation policy stays in force: read-before-write and a file-level version CAS still guard the whole file, while the anchors guard the *lines*. You get line-level correctness and file-level freshness together.
 
@@ -178,7 +179,7 @@ Deletes `beta`, inserts `BETA-NEW` after `gamma`, rewrites `delta`, and collapse
 
 ### `read`
 
-Line-numbered UTF-8 content with a hash per line. The hash covers the line's **context triple** (`prev + curr + next`), so identical lines in different contexts hash differently, and editing line N invalidates anchors only for N−1, N, N+1.
+Line-numbered UTF-8 content with a hash per line. Each line is `LINE#HASH: content`: the **line number is the line's position in the whole file** (absolute — a window past `offset` keeps the file's own numbering), and the hash is a **content-stable** check over that line's own text — a line whose content is unchanged keeps the same hash anywhere in the file and across edits. Identical lines at different positions share a hash; the line number, never the hash, tells them apart.
 
 | Arg | Meaning |
 |---|---|
@@ -207,18 +208,21 @@ Stable `{name, code}` metadata on failures:
 
 | Code | Trigger |
 |---|---|
-| `HASHLINE_STALE_ANCHOR` | Anchor hash no longer matches its line |
-| `HASHLINE_AMBIGUOUS` | Hash matches multiple lines (candidates listed) |
+| `HASHLINE_STALE_ANCHOR` | The anchored line's content no longer matches its hash (or the line is out of range) |
+| `HASHLINE_AMBIGUOUS` | `replace_text`: `old_text` matches multiple times — make it unique |
 | `HASHLINE_INVALID_PATCH` | Overlapping ops, or non-literal `lines` |
 | `HASHLINE_NOOP_LOOP` | Three consecutive identical no-op edits |
+| `HASHLINE_EDIT_LOCKED` | Another edit to the same file is already in flight — retry after it finishes |
 | `FS_NOT_OBSERVED` / `FS_STALE_VERSION` | DSH policy gate, unchanged from stock, with re-read remedies |
 
 ## How the protocol works
 
-- **Hash alphabet** `ZPMQVRWSNKTXJBYH` (16 visually distinct chars, 4 bits each), default length **2** (configurable 2–4). FNV-1a over the UTF-8 context triple, deterministic across platforms.
-- **Context invalidation**: editing line N changes hashes for N−1, N, N+1 only — exactly the region re-anchored after each edit.
-- **Strictness**: an anchor that doesn't match fails the whole call. No relocation to a "close enough" line, ever — the tool trades convenience for correctness.
-- **File-level safety net**: every mutation still goes through DSH's `fs/edit-intent` → version-CAS write, so concurrent modification between validation and write is caught as `FS_STALE_VERSION`.
+- **Anchors are `LINE#HASH`; the line number is the locator.** An anchor names *one exact line* by its position in the whole file; the hash is a content-verification tag, never a locator of its own. Validation compares the hash at that line only — identical lines elsewhere are irrelevant.
+- **Content-stable hashing**: FNV-1a over the line's own UTF-8 text, mapped to the alphabet `ZPMQVRWSNKTXJBYH` (16 visually distinct chars, 4 bits each), default length **2** (configurable 2–4). A line whose content is unchanged keeps the same hash anywhere in the file and across edits; editing line N re-anchors only the lines N actually changed. To keep editing after your own insert/delete shifts a target, continue with `newLineNumber#unchangedHash` — no re-read, no full-context re-anchor.
+- **Web display**: the read and (enabled) grep tools present their results so the web GUI shows the same anchors as the model — the read card's lines render as `LINE#HASH`, grep renders a grouped search card whose matches carry `#HASH:`, and an edit's web card names its fresh-anchor range (`Edit … — fresh anchors A-B`). The anchor data rides the tool's own presentation metadata, so live and replayed sessions render identically with no harness changes.
+- **Concurrent edits, per file**: an in-process per-file lock rejects a second `edit` to the same resolved file while the first is still in flight (`HASHLINE_EDIT_LOCKED`) — two overlapping edits can never validate and write from the same stale snapshot. In-turn edits are strictly serial, so this only fires for genuinely overlapping calls (parallel agents/sessions). The lock covers one process; cross-process or worker-thread overlaps still fall through to the version CAS.
+- **Strictness**: an anchor whose line's content no longer matches fails the whole call. No relocation to a "close enough" line, ever — the tool trades convenience for correctness.
+- **File-level safety net**: every mutation still goes through DSH's `fs/edit-intent` → version-CAS write, so any modification to the file between validation and write is caught as `FS_STALE_VERSION`.
 
 
 ## Configuration
@@ -244,36 +248,37 @@ All optional (on the preset row's `config`):
 ## Repository layout
 
 ```
-src/hash.ts         Hash core: FNV-1a, context triples, anchor format/parse (no deps)
+src/hash.ts         Hash core: FNV-1a content hashing, anchor format/parse (no deps)
 src/render.ts       Read windowing, byte caps, tagged envelope (no deps)
-src/edit-engine.ts  Op resolution, strict validation, bottom-up apply (no deps)
-src/grep-engine.ts  rg argv, NDJSON parsing, region rendering (no deps)
-src/read.ts         read tool (ctx.fs + fs/observed)
-src/edit.ts         edit tool (fs/edit-intent + version-CAS write)
-src/grep.ts         grep tool (ctx.subprocess + packaged rg)
+src/edit-engine.ts  Op resolution, strict line#hash validation, bottom-up apply (no deps)
+src/edit-lock.ts    Per-file in-process edit lock; rejects concurrent edits (no deps)
+src/grep-engine.ts  rg argv, NDJSON parsing, region + card rendering (no deps)
+src/read.ts         read tool (ctx.fs + fs/observed) + web read-card projection
+src/edit.ts         edit tool (fs/edit-intent + version-CAS write + per-file lock)
+src/grep.ts         grep tool (ctx.subprocess + packaged rg) + web search-card projection
 src/prompts/*.ts    Model guidance sections (the "prompt injection")
 src/index.ts        Plugin contract: name/inject/Config/apply
 preset/             Drop-in `hashline` preset template
-tests/              105 tests: unit + integration over real fs-local, policy, and ripgrep
+tests/              Unit + integration over real fs-local, policy, and ripgrep
 ```
 
 ## Limits
 
 - **Stale anchors fail, they don't self-heal.** pi-hashline-edit's 3-way snapshot-merge recovery (ADRs 0004/0005) is deliberately deferred; the tool returns clear re-read guidance instead. Snapshots and merge recovery are the natural v2.
-- **2-char hashes are 256 buckets.** Context hashing plus ambiguity rejection make collisions rare and *safe* (they error, never misapply), but `hashLength: 3` or `4` is there for very large or very uniform files.
+- **2-char hashes are 256 buckets.** A same-line content collision (old vs new content hashing alike) would let a stale anchor pass; context-free hashing also can't tell two *identical* lines apart — the line number is what disambiguates them, and the per-file version CAS catches unknown shifts. `hashLength: 3` or `4` is there for very large or very uniform files.
 - **Dev preview churn.** Built against DSH v0.1 (source @ `47f943`, npm `@deepseek-ai/dsh-*` rc.1/rc.5). DeepSeek warns the preview will break compatibility — pin and re-verify on upgrade.
 
 ## Development
 
 ```sh
 npm install
-npm run check    # typecheck + 105 tests
+npm run check    # typecheck + tests
 npm run build    # lib/index.js — what the npm package ships
 ```
 
 ## Credits
 
-[pi-hashline-edit](https://github.com/RimuruW/pi-hashline-edit) for the protocol (context hashing, op set, strict anchors, grep-anchor loop), [oh-my-pi](https://github.com/can1357/oh-my-pi) for the hashline technique, [Can Balioglu](https://blog.can.ac/2026/02/12/the-harness-problem/) for proving the harness problem.
+[pi-hashline-edit](https://github.com/RimuruW/pi-hashline-edit) for the protocol (hash anchoring, op set, strict anchors, grep-anchor loop), [oh-my-pi](https://github.com/can1357/oh-my-pi) for the hashline technique, [Can Balioglu](https://blog.can.ac/2026/02/12/the-harness-problem/) for proving the harness problem.
 
 ## License
 

@@ -148,15 +148,23 @@ describe('applyEdits — anchor validation', () => {
     expect(code(() => applyEdits(original, [op], OPTS))).toBe('HASHLINE_STALE_ANCHOR')
   })
 
-  it('reports ambiguity when the hash matches elsewhere', () => {
-    // 'a a a a': interior lines 2 and 3 share the (a,a,a) context triple.
+  it('matches an anchored line unambiguously even when identical lines share its hash', () => {
+    // 'a a a a': identical content → identical hash on every line. The line
+    // NUMBER is the locator, so anchoring line 2 applies to line 2 only.
     const content = 'a\na\na\na\n'
     const hashes = computeHashes(splitLines(content), 2)
     expect(hashes[1]).toBe(hashes[2])
-    // Anchor line 4's edge hash onto line 2: mismatch at pos, but the hash
-    // exists at line 4 → ambiguous, never relocated.
-    const op = { op: 'replace', pos: `2#${hashes[3]}`, lines: ['X'] }
-    expect(code(() => applyEdits(content, [op], OPTS))).toBe('HASHLINE_AMBIGUOUS')
+    const { content: out } = applyEdits(content, [{ op: 'replace', pos: `2#${hashes[1]}`, lines: ['X'] }], OPTS)
+    expect(out).toBe('a\nX\na\na\n')
+  })
+
+  it('a mismatched anchor is stale even when its hash matches elsewhere (no relocation)', () => {
+    const content = 'a\nb\nc\nb\n'
+    const hashes = computeHashes(splitLines(content), 2)
+    // Line 3 is 'c'; the 'b' hash lives on lines 2 and 4. The anchor names
+    // line 3, whose content no longer matches → stale, never relocated.
+    const op = { op: 'replace', pos: `3#${hashes[1]}`, lines: ['X'] }
+    expect(code(() => applyEdits(content, [op], OPTS))).toBe('HASHLINE_STALE_ANCHOR')
   })
 
   it('rejects a patch containing display prefixes or diff markers', () => {
@@ -198,21 +206,22 @@ describe('applyEdits — replace_text', () => {
 describe('applyEdits — fresh anchor ranges', () => {
   const original = 'one\ntwo\nthree\nfour\nfive\n'
 
-  it('covers the changed region with context on final coordinates', () => {
+  it('covers exactly the changed line on final coordinates', () => {
     const { anchorsRange } = applyEdits(original, [replace(original, 3, ['THREE'])], OPTS)
-    expect(anchorsRange).toEqual({ from: 2, to: 4 })
+    expect(anchorsRange).toEqual({ from: 3, to: 3 })
   })
 
   it('clamps at the top and bottom of the file', () => {
-    expect(applyEdits(original, [replace(original, 1, ['ONE'])], OPTS).anchorsRange).toEqual({ from: 1, to: 2 })
-    expect(applyEdits(original, [{ op: 'append', lines: ['six'] }], OPTS).anchorsRange).toEqual({ from: 5, to: 6 })
+    expect(applyEdits(original, [replace(original, 1, ['ONE'])], OPTS).anchorsRange).toEqual({ from: 1, to: 1 })
+    expect(applyEdits(original, [{ op: 'append', lines: ['six'] }], OPTS).anchorsRange).toEqual({ from: 6, to: 6 })
   })
 
   it('uses final coordinates when the edit changes line counts', () => {
     const { content, anchorsRange } = applyEdits(original, [append(original, 2, ['two-b', 'two-c'])], OPTS)
     expect(content).toBe('one\ntwo\ntwo-b\ntwo-c\nthree\nfour\nfive\n')
-    // Changed final lines 3-5 (indices 2-4), expanded by one for context → 2-6.
-    expect(anchorsRange).toEqual({ from: 2, to: 6 })
+    // Only the inserted lines (3-4) changed; three/four/five keep their content
+    // and therefore their hashes (usable again with shifted numbers).
+    expect(anchorsRange).toEqual({ from: 3, to: 4 })
   })
 })
 

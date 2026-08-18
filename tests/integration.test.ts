@@ -15,6 +15,8 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
+import { acquireEditLock } from '../src/edit-lock.ts'
+import { readViewLines } from '../src/read.ts'
 import * as Hashline from '../src/index.ts'
 
 const testToolSignal = new AbortController().signal
@@ -80,12 +82,43 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
     expect(out).toContain('(End of file - total 2 lines)')
   })
 
+  it('read labels lines with their WHOLE-file number even past an offset', async () => {
+    const body = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n')
+    await writeFile(join(dir, 'a.txt'), body)
+    const result = await call('read', { file_path: 'a.txt', offset: 6, limit: 4 })
+    expect(result.isError).toBe(false)
+    const out = text(result)
+    // The line numbers are the file's own numbering, never a re-count from 1.
+    expect(out).toMatch(/^\s*6#[ZPMQVRWSNKTXJBYH]{2}:line 6$/mu)
+    expect(out).toMatch(/^\s*8#[ZPMQVRWSNKTXJBYH]{2}:line 8$/mu)
+    expect(out).not.toMatch(/^\s*1#[ZPMQVRWSNKTXJBYH]{2}:line/mu)
+    const meta = (result as { meta?: unknown }).meta as { offset: number; lines: { number: number }[] } | undefined
+    expect(meta?.offset).toBe(6)
+    expect(meta?.lines.map((l) => l.number)).toEqual([6, 7, 8])
+  })
+
   it('raw read returns untagged content', async () => {
     await writeFile(join(dir, 'a.txt'), 'alpha\nbeta')
     const result = await call('read', { file_path: 'a.txt', raw: true })
     expect(result.isError).toBe(false)
     expect(text(result)).toContain('<content>\nalpha\nbeta')
     expect(text(result)).not.toContain('#')
+  })
+
+  it('persists the hash in presentationMeta and renders the web card as LINE#HASH', async () => {
+    await writeFile(join(dir, 'a.txt'), 'alpha\nbeta\ngamma\n')
+    const result = await call('read', { file_path: 'a.txt' })
+    expect(result.isError).toBe(false)
+    const meta = (result as { meta?: unknown }).meta as
+      | { path: string; offset: number; lines: { number: number; hash: string; text: string }[]; totalLines: number }
+      | undefined
+    expect(meta).toBeDefined()
+    expect(meta!.lines.map((l) => l.text)).toEqual(['alpha', 'beta', 'gamma'])
+    expect(meta!.lines.every((l) => /^[ZPMQVRWSNKTXJBYH]{2}$/u.test(l.hash))).toBe(true)
+    // The web card line projection embeds the hash label in the text column.
+    const viewLines = readViewLines(meta!.lines)
+    expect(viewLines[1]).toEqual({ number: 2, text: `#${meta!.lines[1]!.hash}: beta` })
+    expect(viewLines.map((l) => l.text).join('\n')).toContain(`#${meta!.lines[0]!.hash}: alpha`)
   })
 
   it('edit applies a replace anchored on the read output', async () => {
@@ -114,6 +147,11 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
     const out = text(result)
     expect(out).toContain('2 edit(s) applied')
     expect(out).toContain('--- Anchors')
+    // The result also persists the fresh anchors for the web diff card.
+    const meta = (result as { meta?: unknown }).meta as { anchors?: { line: number; hash: string }[] } | undefined
+    expect(meta?.anchors?.length).toBeGreaterThan(0)
+    const first = meta!.anchors![0]!
+    expect(out).toMatch(new RegExp(`^\\s*${first.line}#${first.hash}$`, 'mu'))
   })
 
   it('chained edits: fresh anchors from one edit drive the next without a re-read', async () => {
@@ -173,6 +211,74 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
     expect(result.isError).toBe(true)
     expect(codeOf(result)).toBe('FS_STALE_VERSION')
     expect(text(result)).toContain('re-read the file, then retry')
+  })
+
+  it('rejects a concurrent edit to the same file with HASHLINE_EDIT_LOCKED and writes nothing', async () => {
+    await writeFile(join(dir, 'a.txt'), 'one\ntwo\nthree\n')
+    const readOut = text(await call('read', { file_path: 'a.txt' }))
+    const target = await ctx.fs.resolve('a.txt', { cwd: dir, signal: testToolSignal })
+    const key = String(target.targetKey)
+    const held = acquireEditLock(key)
+    expect(held).toBeDefined()
+    try {
+      const result = await call('edit', {
+        file_path: 'a.txt',
+        edits: [{ op: 'replace', pos: anchorAt(readOut, 2), lines: ['TWO'] }],
+      })
+      expect(result.isError).toBe(true)
+      expect(codeOf(result)).toBe('HASHLINE_EDIT_LOCKED')
+      expect(text(result)).toContain('already in progress')
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('one\ntwo\nthree\n')
+    } finally {
+      held!.release()
+    }
+    // Once released, a serial edit to the same file succeeds normally.
+    const retried = await call('edit', {
+      file_path: 'a.txt',
+      edits: [{ op: 'replace', pos: anchorAt(readOut, 2), lines: ['TWO'] }],
+    })
+    expect(retried.isError).toBe(false)
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('one\nTWO\nthree\n')
+  })
+
+  it('does not reject a follow-up edit after an edit completes (lock released)', async () => {
+    await writeFile(join(dir, 'a.txt'), 'alpha\nbeta\n')
+    const readOut = text(await call('read', { file_path: 'a.txt' }))
+    const first = await call('edit', {
+      file_path: 'a.txt',
+      edits: [{ op: 'replace', pos: anchorAt(readOut, 1), lines: ['ALPHA'] }],
+    })
+    expect(first.isError).toBe(false)
+    // Content-stable chaining: editing line 1 left line 2's content (and thus
+    // its hash) unchanged, so the PRE-EDIT anchor for line 2 still validates —
+    // no re-read needed. Also proves the edit lock was released.
+    const second = await call('edit', {
+      file_path: 'a.txt',
+      edits: [{ op: 'replace', pos: anchorAt(readOut, 2), lines: ['BETA'] }],
+    })
+    expect(second.isError).toBe(false)
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('ALPHA\nBETA\n')
+  })
+
+  it('continues with newLine#sameHash after an insert shifts the target (no re-read)', async () => {
+    await writeFile(join(dir, 'a.txt'), 'one\ntarget\ntwo\n')
+    const readOut = text(await call('read', { file_path: 'a.txt' }))
+    const targetAnchor = anchorAt(readOut, 2)
+    const targetHash = targetAnchor.split('#')[1]
+    // Insert a line above: the target's content is untouched, so its hash is
+    // unchanged but its line number shifts 2 → 3.
+    const shifted = await call('edit', {
+      file_path: 'a.txt',
+      edits: [{ op: 'prepend', pos: anchorAt(readOut, 1), lines: ['zero'] }],
+    })
+    expect(shifted.isError).toBe(false)
+    // Continue at the NEW line number with the SAME (unchanged) hash without re-reading.
+    const continued = await call('edit', {
+      file_path: 'a.txt',
+      edits: [{ op: 'replace', pos: `3#${targetHash}`, lines: ['TARGET!'] }],
+    })
+    expect(continued.isError).toBe(false)
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('zero\none\nTARGET!\ntwo\n')
   })
 
   it('the stale remedy is actionable: re-read then retry succeeds', async () => {

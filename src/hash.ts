@@ -3,10 +3,14 @@
  * unit-testable in isolation, mirroring how `@deepseek-ai/dsh-tool-fs` keeps
  * its renderer core separate from plugin code.
  *
- * Adopted from pi-hashline-edit (MIT, github.com/RimuruW/pi-hashline-edit):
- * every line carries a short content hash over its immediate context
- * (`prev + curr + next`), so identical lines in different contexts hash
- * differently, and editing line N invalidates anchors only for N-1, N, N+1.
+ * Every anchor is `LINE#HASH`: the **line number is the locator** (the 1-based
+ * position of the line in the whole file), and the hash is a content
+ * verification tag — it never locates a line on its own. Hashing is
+ * CONTENT-STABLE: the digest covers only the line's own text, so a line whose
+ * content is unchanged keeps the same hash even after edits shift it to a new
+ * line number, letting a caller continue with `newLine#sameHash` instead of
+ * re-reading. Directing by line number also makes identical lines at
+ * different positions unambiguous by construction.
  * @module dsh-tool-hashline/hash
  */
 
@@ -39,11 +43,12 @@ export function fnv1a32(bytes: Uint8Array): number {
 }
 
 /**
- * Hash one line from its context triple. Missing neighbors hash as empty
- * strings, so the first and last lines still get context-sensitive hashes.
+ * Hash one line from its OWN text (content-stable): identical lines always
+ * hash identically, wherever they appear, and a line keeps its hash across
+ * edits as long as its content is unchanged — only its line number changes.
  */
-export function hashLine(prev: string, curr: string, next: string, length: number): string {
-  const digest = fnv1a32(encoder.encode(`${prev}\n${curr}\n${next}`))
+export function hashLine(curr: string, length: number): string {
+  const digest = fnv1a32(encoder.encode(curr))
   let out = ''
   for (let i = 0; i < length; i++) {
     out += HASH_ALPHABET.charAt((digest >>> (i * 4)) & 0xf)
@@ -51,20 +56,15 @@ export function hashLine(prev: string, curr: string, next: string, length: numbe
   return out
 }
 
-/** Compute the hash of every line of an LF-normalized file. */
+/** Compute the content hash of every line of an LF-normalized file. */
 export function computeHashes(lines: readonly string[], length: number): string[] {
-  return lines.map((line, i) => hashLine(
-    lines[i - 1] ?? '',
-    line,
-    lines[i + 1] ?? '',
-    length,
-  ))
+  return lines.map((line) => hashLine(line, length))
 }
 
 /**
  * Split content into LF-normalized lines; CRLF and lone CR are accepted.
- * A trailing newline does NOT produce a final empty line (line counts and
- * hash contexts agree between the read window and the edit engine).
+ * A trailing newline does NOT produce a final empty line (line counts agree
+ * between the read window and the edit engine).
  */
 export function splitLines(content: string): string[] {
   const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
@@ -73,9 +73,9 @@ export function splitLines(content: string): string[] {
 
 /** A parsed `LINE#HASH` anchor. */
 export interface Anchor {
-  /** 1-based line number. */
+  /** 1-based line number in the whole file — the locator. */
   line: number
-  /** Content hash over the line's context, from {@link HASH_ALPHABET}. */
+  /** Content-stable hash over the line's own text, from {@link HASH_ALPHABET}. */
   hash: string
 }
 
@@ -108,6 +108,17 @@ export function formatTaggedLine(anchor: Anchor, text: string, padWidth: number)
   return `${String(anchor.line).padStart(padWidth, ' ')}#${anchor.hash}:${text}`
 }
 
+/**
+ * Render one line's hash label as `` `#VR: text` `` — the text the web read
+ * and search cards show in the line column beside the file line-number
+ * gutter, so a UI without a dedicated hash slot (the harness `ReadBlock` /
+ * `SearchBlock` shapes carry only `{number,text}`) still displays every line
+ * as `LINE#HASH`. The digest lives on the line's `text`, never in the gutter.
+ */
+export function formatHashLabel(anchor: Anchor, text: string): string {
+  return `#${anchor.hash}: ${text}`
+}
+
 /** One inclusive line range. */
 export interface LineRange {
   from: number
@@ -115,15 +126,16 @@ export interface LineRange {
 }
 
 /**
- * The anchor-invalidation window of an edit touching lines `first..last`
- * (inclusive): context hashing invalidates `first-1 .. last+1`. Clamped to
- * the file; callers use this to compute the fresh-anchor block returned
- * after a successful edit.
+ * The changed-line range an edit invalidates. With content-stable hashing an
+ * edit touches ONLY the lines whose content it actually changed — no
+ * expansion to neighbors (unchanged lines keep their hashes). Clamped to the
+ * file; callers use this to compute the fresh-anchor block returned after a
+ * successful edit.
  */
 export function affectedRange(first: number, last: number, totalLines: number): LineRange {
   return {
-    from: Math.max(1, first - 1),
-    to: Math.min(totalLines, last + 1),
+    from: Math.max(1, first),
+    to: Math.min(totalLines, Math.max(first, last)),
   }
 }
 

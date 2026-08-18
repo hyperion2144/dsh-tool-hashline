@@ -1,5 +1,15 @@
 # PLAN: `dsh-tool-hashline` — hash-anchored `read`/`edit` for DeepSeek Harness
 
+> **Protocol note (supersedes §2.1):** the shipped protocol has since moved to
+> **content-stable hashing** with line-number-primary anchors. An anchor is
+> `LINE#HASH` where the LINE NUMBER is the locator (the line's position in the
+> whole file) and the HASH is a content-stable check over that line's own text —
+> unchanged content keeps its hash, so after your own edits shift a line you
+> continue with `newLine#unchangedHash` instead of re-reading, and an edit
+> re-anchors only the lines it changed. Identical lines at different positions
+> share a hash; the line number disambiguates them. See README → "How the
+> protocol works".
+
 Goal: a DeepSeek Harness plugin that replaces the normal `edit` and `read` tools with hash-anchored hashline versions, so every edit carries a verifiable per-line content hash and stale anchors are rejected before touching the file — no silent wrong-line rewrites.
 
 Success criteria (all observable):

@@ -6,6 +6,7 @@ import {
   computeHashes,
   fnv1a32,
   formatAnchor,
+  formatHashLabel,
   formatTaggedLine,
   hashLine,
   mergeRanges,
@@ -43,40 +44,38 @@ describe('assertHashLength', () => {
 describe('hashLine / computeHashes', () => {
   it('produces hashes from the configured alphabet and length', () => {
     for (const length of [2, 3, 4]) {
-      const hash = hashLine('a', 'b', 'c', length)
+      const hash = hashLine('b', length)
       expect(hash).toHaveLength(length)
       expect([...hash].every((ch) => HASH_ALPHABET.includes(ch))).toBe(true)
     }
   })
 
-  it('is context-sensitive: neighbors change the hash', () => {
-    const base = hashLine('x', 'body', 'y', 2)
-    expect(hashLine('z', 'body', 'y', 2)).not.toBe(base)
-    expect(hashLine('x', 'body', 'z', 2)).not.toBe(base)
-  })
-
-  it('hashes identical lines differently in different contexts', () => {
+  it('is content-only: the same line always hashes the same, wherever it appears', () => {
+    const identical = hashLine('body', 2)
+    expect(hashLine('body', 2)).toBe(identical)
+    // Different content (even the same text padded) hashes differently.
+    expect(hashLine('other', 2)).not.toBe(identical)
     const lines = ['if (a) {', '}', 'if (b) {', '}', '}']
     const hashes = computeHashes(lines, 2)
-    // Lines 2 and 5 are both '}' but have different neighbors.
-    expect(hashes[1]).not.toBe(hashes[4])
-    // Lines 4 and 5 are adjacent '}' lines sharing one neighbor; contexts
-    // still differ ('}' vs 'if (b) {' as prev), so they must differ too.
-    expect(hashes[3]).not.toBe(hashes[4])
+    // Lines 2 and 5 are both '}' and therefore share a hash — the line NUMBER
+    // (not the hash) is what disambiguates them in an anchor.
+    expect(hashes[1]).toBe(hashes[4])
   })
 
-  it('treats the first and last lines as having empty neighbors', () => {
-    const hashes = computeHashes(['a', 'b'], 2)
-    expect(hashes[0]).toBe(hashLine('', 'a', 'b', 2))
-    expect(hashes[1]).toBe(hashLine('a', 'b', '', 2))
+  it('distinguishes different content within one line', () => {
+    expect(hashLine('x', 2)).not.toBe(hashLine('y', 2))
+    expect(hashLine('function a', 2)).not.toBe(hashLine('function b', 2))
   })
 
-  it('invalidates only N-1..N+1 when line N changes', () => {
+  it('is content-stable: changing an unrelated line never changes this line\'s hash', () => {
     const before = computeHashes(['l1', 'l2', 'l3', 'l4', 'l5', 'l6'], 2)
     const after = computeHashes(['l1', 'l2', 'CHANGED', 'l4', 'l5', 'l6'], 2)
+    // Only the changed line's own hash differs; every untouched line keeps its
+    // exact hash (so callers can reuse oldHashes at shifted line numbers).
+    const expectation = ['same', 'same', 'diff', 'same', 'same', 'same']
     for (let i = 0; i < 6; i++) {
-      const expectedStale = i >= 1 && i <= 3 // indices 1..3 = lines 2..4
-      expect(after[i] === before[i]).toBe(!expectedStale)
+      const expectedDiff = expectation[i] === 'diff'
+      expect(after[i] === before[i]).toBe(!expectedDiff)
     }
   })
 })
@@ -139,16 +138,26 @@ describe('formatTaggedLine', () => {
   })
 })
 
+describe('formatHashLabel', () => {
+  it('renders "#HASH: text" for the web card line column', () => {
+    expect(formatHashLabel({ line: 8, hash: 'VR' }, 'function hello() {')).toBe('#VR: function hello() {')
+  })
+
+  it('is independent of the line number — the gutter owns the number', () => {
+    expect(formatHashLabel({ line: 108, hash: 'KT' }, 'x')).toBe('#KT: x')
+  })
+})
+
 describe('affectedRange', () => {
-  it('expands one line in both directions and clamps', () => {
-    expect(affectedRange(3, 3, 10)).toEqual({ from: 2, to: 4 })
-    expect(affectedRange(1, 1, 10)).toEqual({ from: 1, to: 2 })
-    expect(affectedRange(10, 10, 10)).toEqual({ from: 9, to: 10 })
+  it('covers exactly the changed lines, clamping to the file', () => {
+    expect(affectedRange(3, 3, 10)).toEqual({ from: 3, to: 3 })
+    expect(affectedRange(1, 1, 10)).toEqual({ from: 1, to: 1 })
+    expect(affectedRange(10, 10, 10)).toEqual({ from: 10, to: 10 })
     expect(affectedRange(1, 1, 1)).toEqual({ from: 1, to: 1 })
   })
 
-  it('covers inclusive ranges', () => {
-    expect(affectedRange(4, 7, 20)).toEqual({ from: 3, to: 8 })
+  it('covers inclusive ranges without neighbor expansion', () => {
+    expect(affectedRange(4, 7, 20)).toEqual({ from: 4, to: 7 })
   })
 })
 

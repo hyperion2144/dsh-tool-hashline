@@ -10,9 +10,9 @@ import { formatTaggedLine, hashLine, splitLines } from './hash.ts'
 
 /** One window line. `hash` is always computed on the FULL line content. */
 export interface TaggedLine {
-  /** 1-based line number. */
+  /** 1-based line number in the whole file. */
   number: number
-  /** Content hash over the line's context, from the full untruncated text. */
+  /** Content-stable hash over the line's own text, from the full untruncated content. */
   hash: string
   /** The model-facing text: truncated when the line exceeds `maxLineLength`. */
   text: string
@@ -78,8 +78,9 @@ async function forEachLine(
  * Build one window over an LF-normalized line source. Lines outside the
  * window are still counted for `totalLines`; when the rendered bytes exceed
  * `maxBytes`, the scan stops early and `totalLines` stays unknown (the capped
- * footer needs no total). Hashes are computed from the full line content,
- * never the truncated display text.
+ * footer needs no total). Hashes are content-stable: computed from each line's
+ * own text (the FULL line, never the truncated display text), identical for a
+ * given line wherever it appears.
  */
 export async function buildTaggedWindow(
   source: string | AsyncIterable<string>,
@@ -93,11 +94,11 @@ export async function buildTaggedWindow(
   let cappedByBytes = false
 
   /**
-   * Process one line (as the middle of its context triple). Returns false
-   * when the byte cap fired and the scan should stop.
+   * Process one line. Returns false when the byte cap fired and the scan
+   * should stop.
    */
-  const process = (prev: string, curr: string, currIndex: number, next: string): boolean => {
-    const hash = hashLine(prev, curr, next, opts.hashLength)
+  const process = (curr: string, currIndex: number): boolean => {
+    const hash = hashLine(curr, opts.hashLength)
     const number = currIndex + 1
     const inWindow = currIndex >= startIndex && currIndex < endIndexExclusive
     if (!inWindow) return true
@@ -112,33 +113,22 @@ export async function buildTaggedWindow(
     return true
   }
 
-  // One-line-lag emission: a line's hash needs its successor, so each fed
-  // line emits the PREVIOUS one (prev/curr/next all known); the tail emits
-  // the last line with an empty successor. No queue, no special cases.
-  let carry2 = ''
-  let carry1: { line: string; index: number } | undefined
-  let fed = 0
+  // Content-only hashing needs no lookahead/context: each fed line is hashed
+  // and windowed directly, and the file index grows monotonically.
+  let index = 0
   let stopped = false
   await forEachLine(source, (line) => {
     if (stopped) return
-    if (carry1 === undefined) {
-      carry1 = { line, index: fed++ }
-      return
-    }
-    if (!process(carry2, carry1.line, carry1.index, line)) {
+    if (!process(line, index)) {
       stopped = true
       return
     }
-    carry2 = carry1.line
-    carry1 = { line, index: fed++ }
+    index++
   })
-  if (!stopped && carry1 !== undefined) {
-    process(carry2, carry1.line, carry1.index, '')
-  }
 
   return {
     lines,
-    ...(cappedByBytes ? {} : { totalLines: fed }),
+    ...(cappedByBytes ? {} : { totalLines: index }),
     cappedByBytes,
   }
 }

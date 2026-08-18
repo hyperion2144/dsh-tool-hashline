@@ -12,6 +12,7 @@ export type HashlineErrorCode =
   | 'HASHLINE_AMBIGUOUS'
   | 'HASHLINE_INVALID_PATCH'
   | 'HASHLINE_NOOP_LOOP'
+  | 'HASHLINE_EDIT_LOCKED'
 
 /** Stable, machine-routable hashline failure. */
 export class HashlineError extends HarnessError {

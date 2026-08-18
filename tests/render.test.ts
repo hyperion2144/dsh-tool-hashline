@@ -26,9 +26,9 @@ describe('buildTaggedWindow', () => {
     expect(cappedByBytes).toBe(false)
     expect(lines.map((l) => l.number)).toEqual([1, 2, 3])
     expect(lines.map((l) => l.text)).toEqual(['function hello() {', '  return 1', '}'])
-    // Hash must match the context-triple computation.
-    expect(lines[0]!.hash).toBe(hashLine('', 'function hello() {', '  return 1', 2))
-    expect(lines[1]!.hash).toBe(hashLine('function hello() {', '  return 1', '}', 2))
+    // Hash is content-only over each line's own text.
+    expect(lines[0]!.hash).toBe(hashLine('function hello() {', 2))
+    expect(lines[1]!.hash).toBe(hashLine('  return 1', 2))
   })
 
   it('honors offset and limit', async () => {
@@ -43,7 +43,7 @@ describe('buildTaggedWindow', () => {
     const source = `a\n${longLine}\nc`
     const { lines } = await buildTaggedWindow(source, { ...OPTS, maxLineLength: 10 })
     expect(lines[1]!.text).toBe(`${'x'.repeat(10)}... (line truncated to 10 chars)`)
-    expect(lines[1]!.hash).toBe(hashLine('a', longLine, 'c', 2))
+    expect(lines[1]!.hash).toBe(hashLine(longLine, 2))
   })
 
   it('stops at the byte cap and omits totalLines', async () => {
@@ -104,9 +104,9 @@ describe('truncateDisplayLine', () => {
 
 describe('formatReadOutput', () => {
   const lines = [
-    { number: 1, hash: hashLine('', 'a', 'b', 2), text: 'a' },
-    { number: 2, hash: hashLine('a', 'b', 'c', 2), text: 'b' },
-    { number: 3, hash: hashLine('b', 'c', '', 2), text: 'c' },
+    { number: 1, hash: hashLine('a', 2), text: 'a' },
+    { number: 2, hash: hashLine('b', 2), text: 'b' },
+    { number: 3, hash: hashLine('c', 2), text: 'c' },
   ]
 
   it('renders the tagged envelope with the continue footer', () => {

@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { applyEdits, type EditOpInput } from './edit-engine.ts'
 import { HashlineError } from './errors.ts'
+import { runWithEditLock } from './edit-lock.ts'
 import { computeHashes, formatAnchor, fnv1a32, splitLines, type Anchor } from './hash.ts'
 import { EDIT_GUIDANCE } from './prompts/edit.ts'
 
@@ -73,7 +74,7 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
 
   ctx.tools.register(defineTool({
     name: 'edit',
-    description: 'Edit an existing UTF-8 text file using LINE#HASH anchors from the read tool. All ops in one call validate against the same snapshot; stale anchors fail the call.',
+    description: 'Edit an existing UTF-8 text file using LINE#HASH anchors from the read tool. The line NUMBER is the locator — it points at that line\'s position in the WHOLE file (not a read offset); the hash verifies the line\'s content. All ops in one call validate against the same snapshot; a line whose content changed since your anchor fails the call.',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to edit, resolved by the filesystem backend.' },
       edits: {
@@ -85,9 +86,9 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
           additionalProperties: false,
           properties: {
             op: { type: 'string', required: true, description: 'replace | append | prepend | replace_text' },
-            pos: { type: 'string', description: 'LINE#HASH anchor (e.g. "42#KT"); required for replace, optional for append/prepend (omitted: EOF/BOF).' },
+            pos: { type: 'string', description: 'LINE#HASH anchor: the line NUMBER is the line\'s position in the whole file and the hash verifies that line\'s content, e.g. "42#KT". Required for replace, optional for append/prepend (omitted: EOF/BOF). If a line kept its content but shifted, reuse it as "newLine#sameHash" without re-reading.' },
             end: { type: 'string', description: 'LINE#HASH anchor of the inclusive range end for replace.' },
-            lines: { type: 'array', items: { type: 'string' }, description: 'Literal replacement/insertion lines. Empty array deletes a replace range.' },
+            lines: { type: 'array', items: { type: 'string' }, description: 'The REAL file content to insert/replace with — never LINE#HASH prefixes or diff markers. Empty array deletes a replace range.' },
             old_text: { type: 'string', description: 'replace_text: literal text to replace.' },
             new_text: { type: 'string', description: 'replace_text: literal replacement.' },
           },
@@ -130,6 +131,7 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
       },
       presentationMeta: (args, value) => ({
         diffs: [{ path: args.file_path, oldText: value.before, newText: value.after }],
+        ...(value.anchors.length > 0 ? { anchors: value.anchors } : {}),
       }),
     },
     async execute(args, exec) {
@@ -140,62 +142,75 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
         signal: exec.signal,
       })
       const targetKey = String(target.targetKey)
-      try {
-        const editIntent = await ctx.waterfall('fs/edit-intent', target, exec, () => undefined)
-        const writeIntent: FsWriteIntent | undefined = editIntent === undefined
-          ? undefined
-          : { kind: 'replaceIfVersion', version: editIntent.version }
-        const current = await ctx.fs.readText(target, exec.signal)
-        const applied = applyEdits(current, input.edits, opts)
+      // Reject a second edit to the same file while the first is in flight:
+      // anchors would otherwise be validated against a snapshot another write
+      // is about to move. In-turn edits are strictly serial, so rejection only
+      // fires for genuinely overlapping (cross-agent/session/dispatch) calls.
+      return runWithEditLock(targetKey, async () => {
+        try {
+          const editIntent = await ctx.waterfall('fs/edit-intent', target, exec, () => undefined)
+          const writeIntent: FsWriteIntent | undefined = editIntent === undefined
+            ? undefined
+            : { kind: 'replaceIfVersion', version: editIntent.version }
+          const current = await ctx.fs.readText(target, exec.signal)
+          const applied = applyEdits(current, input.edits, opts)
 
-        if (!applied.changed) {
-          const signature = noopSignature(input.edits, current)
-          const entry = noopState.get(targetKey)
-          const count = (entry?.signature === signature ? entry.count : 0) + 1
-          noopState.set(targetKey, { signature, count })
-          if (count >= 3) {
-            throw new HashlineError(
-              'three consecutive identical edits made no change — state what should actually differ, or re-read the file',
-              'HASHLINE_NOOP_LOOP',
-            )
+          if (!applied.changed) {
+            const signature = noopSignature(input.edits, current)
+            const entry = noopState.get(targetKey)
+            const count = (entry?.signature === signature ? entry.count : 0) + 1
+            noopState.set(targetKey, { signature, count })
+            if (count >= 3) {
+              throw new HashlineError(
+                'three consecutive identical edits made no change — state what should actually differ, or re-read the file',
+                'HASHLINE_NOOP_LOOP',
+              )
+            }
+            return {
+              path: target.displayPath,
+              before: current,
+              after: current,
+              appliedOps: input.edits.length,
+              changed: false,
+              anchors: [],
+            }
           }
+          noopState.delete(targetKey)
+          const wrote = await ctx.fs.writeText(target, applied.content, writeIntent, exec.signal)
+          ctx.emit('fs/observed', target, { kind: 'present', version: wrote.version }, exec)
           return {
             path: target.displayPath,
-            before: current,
-            after: current,
+            before: wrote.before ?? '',
+            after: wrote.after,
             appliedOps: input.edits.length,
-            changed: false,
-            anchors: [],
+            changed: true,
+            anchors: freshAnchors(wrote.after, applied.anchorsRange, opts.hashLength),
           }
-        }
-        noopState.delete(targetKey)
-        const wrote = await ctx.fs.writeText(target, applied.content, writeIntent, exec.signal)
-        ctx.emit('fs/observed', target, { kind: 'present', version: wrote.version }, exec)
-        return {
-          path: target.displayPath,
-          before: wrote.before ?? '',
-          after: wrote.after,
-          appliedOps: input.edits.length,
-          changed: true,
-          anchors: freshAnchors(wrote.after, applied.anchorsRange, opts.hashLength),
-        }
-      } catch (error: unknown) {
-        if (error instanceof FsError) {
-          if (error.code === 'FS_STALE_VERSION') {
-            throw new FsError(`${error.message} — re-read the file, then retry`, error.code)
+        } catch (error: unknown) {
+          if (error instanceof FsError) {
+            if (error.code === 'FS_STALE_VERSION') {
+              throw new FsError(`${error.message} — re-read the file, then retry`, error.code)
+            }
+            if (error.code === 'FS_NOT_OBSERVED') {
+              throw new FsError(`${error.message} — read the file, then retry`, error.code)
+            }
           }
-          if (error.code === 'FS_NOT_OBSERVED') {
-            throw new FsError(`${error.message} — read the file, then retry`, error.code)
-          }
+          throw error
         }
-        throw error
-      }
+      })
     },
     presentResult(args, result: ToolResult): DiffResultView | undefined {
       if (result.isError) return undefined
-      const diffs = (result.meta as { diffs?: { path: string; oldText: string; newText: string }[] } | undefined)?.diffs
+      const meta = result.meta as { diffs?: { path: string; oldText: string; newText: string }[]; anchors?: Anchor[] } | undefined
+      const diffs = meta?.diffs
       if (diffs === undefined) return undefined
-      return { card: 'diff', title: `Edit ${args.file_path}`, diffs }
+      // Surface the fresh-anchor range so the web diff card shows the edit
+      // returned new hashes (the full list stays in the model-facing text).
+      const anchors = meta?.anchors
+      const title = anchors !== undefined && anchors.length > 0
+        ? `Edit ${args.file_path} — fresh anchors ${anchors[0]!.line}-${anchors.at(-1)!.line}`
+        : `Edit ${args.file_path}`
+      return { card: 'diff', title, diffs }
     },
   }))
 }
