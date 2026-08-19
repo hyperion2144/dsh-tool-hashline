@@ -45,6 +45,7 @@
     "@deepseek-ai/dsh-fs-local": "^0.0.1-rc.5",
     "@deepseek-ai/dsh-fs-observation-policy": "^0.0.1-rc.5",
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-sandbox": "^0.0.1-rc.5",
     "@deepseek-ai/dsh-subprocess": "^0.0.1-rc.5",
     "@deepseek-ai/dsh-subprocess-local": "^0.0.1-rc.5",
     "@deepseek-ai/dsh-system-prompt": "^0.0.1-rc.5",

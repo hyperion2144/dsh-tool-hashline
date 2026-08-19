@@ -10,13 +10,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { DiffResultView, ToolResult } from '@deepseek-ai/dsh-tools'
-import { FsError, type FsWriteIntent } from '@deepseek-ai/dsh-fs'
+import type { FsWriteIntent } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { applyEdits, type EditOpInput } from './edit-engine.ts'
 import { HashlineError } from './errors.ts'
 import { runWithEditLock } from './edit-lock.ts'
 import { computeHashes, formatAnchor, fnv1a32, splitLines, type Anchor } from './hash.ts'
+import { createEditSandbox, hasFsErrorCode } from './sandbox.ts'
 import { EDIT_GUIDANCE } from './prompts/edit.ts'
 
 const encoder = new TextEncoder()
@@ -71,6 +72,8 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
 
   // Consecutive identical no-op edits per file, for the loop guard.
   const noopState = new Map<string, { signature: string; count: number }>()
+  // Standing-policy resolution + escalation + denial mapping (tool-fs parity).
+  const sandbox = createEditSandbox(ctx)
 
   ctx.tools.register(defineTool({
     name: 'edit',
@@ -94,6 +97,7 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
           },
         },
       },
+      ...sandbox.schemaFields(),
     },
     output: {
       schema: {
@@ -136,7 +140,11 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
     },
     async execute(args, exec) {
       const input = parseEditArgs(args)
-      const cwd = exec.agent?.session.header.cwd
+      // The session's standing sandbox policy (danger-full-access under a
+      // full-access permission) — without threading the policy, a confining
+      // backend defaults the write to workspace-write.
+      const sandboxPolicy = await sandbox.resolvePolicy(args, exec)
+      const cwd = sandboxPolicy?.workspaceRoot ?? exec.agent?.session.header.cwd
       const target = await ctx.fs.resolve(input.filePath, {
         ...(cwd !== undefined ? { cwd } : {}),
         signal: exec.signal,
@@ -176,7 +184,7 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
             }
           }
           noopState.delete(targetKey)
-          const wrote = await ctx.fs.writeText(target, applied.content, writeIntent, exec.signal)
+          const wrote = await ctx.fs.writeText(target, applied.content, writeIntent, exec.signal, sandboxPolicy)
           ctx.emit('fs/observed', target, { kind: 'present', version: wrote.version }, exec)
           return {
             path: target.displayPath,
@@ -187,15 +195,15 @@ export function applyEditTool(ctx: Context, opts: EditToolOptions): void {
             anchors: freshAnchors(wrote.after, applied.anchorsRange, opts.hashLength),
           }
         } catch (error: unknown) {
-          if (error instanceof FsError) {
-            if (error.code === 'FS_STALE_VERSION') {
-              throw new FsError(`${error.message} — re-read the file, then retry`, error.code)
-            }
-            if (error.code === 'FS_NOT_OBSERVED') {
-              throw new FsError(`${error.message} — read the file, then retry`, error.code)
-            }
+          // Map a sandbox denial to the shared marker, then add the hashline
+          // remedies — all duck-typed (an Error's `code`), mutating the same
+          // host-owned error so its structured identity survives the throw.
+          const mapped = sandbox.mapError(error, sandboxPolicy)
+          if (mapped instanceof Error) {
+            if (hasFsErrorCode(mapped, 'FS_STALE_VERSION')) mapped.message = `${mapped.message} — re-read the file, then retry`
+            if (hasFsErrorCode(mapped, 'FS_NOT_OBSERVED')) mapped.message = `${mapped.message} — read the file, then retry`
           }
-          throw error
+          throw mapped
         }
       })
     },

@@ -366,6 +366,57 @@ describe('bare provider (no dsh-fs-observation-policy)', () => {
   })
 })
 
+describe('confining backend: the standing sandbox policy is threaded into writeText', () => {
+  // Simulate a confining filesystem (sandboxMode = workspace-write) whose
+  // session resolves to danger-full-access, and prove the edit passes that
+  // policy to writeText — otherwise a full-access session would be defaulted
+  // to workspace-write and denied writes outside the workspace.
+  const resolvedPoliciesPushed: { mode: string; workspaceRoot: string }[] = []
+
+  beforeEach(async () => {
+    resolvedPoliciesPushed.length = 0
+    dir = await mkdtemp(join(tmpdir(), 'dsh-hashline-sandbox-'))
+    ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(LocalFileSystem, { cwd: dir })
+    await ctx.plugin(FsPolicy)
+    const fs = ctx.fs as unknown as { [k: string]: unknown }
+    Object.defineProperty(fs, 'sandboxMode', { get: () => 'workspace-write', configurable: true })
+    const writeText = (fs.writeText as (t: unknown, c: unknown, e?: unknown, s?: unknown, p?: unknown) => Promise<unknown>).bind(ctx.fs)
+    fs.writeText = async (target: unknown, content: unknown, expected: unknown, signal: unknown, policy: unknown) => {
+      resolvedPoliciesPushed.push(policy as { mode: string; workspaceRoot: string })
+      return writeText(target, content, expected, signal, policy)
+    }
+    // The sandbox policy service resolves the session's standing mode.
+    ctx.provide('sandboxPolicy', {
+      resolve: (input?: { session?: unknown }) =>
+        input?.session === undefined ? undefined : { mode: 'danger-full-access', workspaceRoot: dir },
+    })
+    fiber = await ctx.plugin(Hashline)
+  })
+
+  it('a full-access session edit outside the workspace carries the danger-full-access policy', async () => {
+    const outside = join(tmpdir(), `dsh-hashline-out-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+    await writeFile(outside, 'alpha\nbeta\n')
+    try {
+      const readOut = text(await call('read', { file_path: outside }))
+      const result = await call('edit', {
+        file_path: outside,
+        edits: [{ op: 'replace', pos: anchorAt(readOut, 2), lines: ['BETA'] }],
+      })
+      expect(result.isError).toBe(false)
+      expect(await readFile(outside, 'utf8')).toBe('alpha\nBETA\n')
+      // The write was stamped with the resolved standing policy, not the
+      // backend's workspace-write default.
+      expect(resolvedPoliciesPushed.at(-1)).toEqual({ mode: 'danger-full-access', workspaceRoot: dir })
+      expect(await readFile(join(dir, 'a.txt'), 'utf8').catch(() => '')).toBe('') // dir untouched
+    } finally {
+      await rm(outside, { force: true })
+    }
+  })
+})
+
 describe('per-session cwd', () => {
   let sessionDir: string
   beforeEach(async () => {
